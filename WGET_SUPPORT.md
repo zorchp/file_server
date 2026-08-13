@@ -47,14 +47,33 @@ wget/curl 不执行 JS，导致：
 
 改法：回调开头判断 `err != nil` 就跳过该路径；`Get()` 开头加 `os.Stat`，目录不存在直接返回错误（HTTP 500），不再崩溃断连。
 
+### 5. `main.go` 新增 `listenFreePort()`：端口自动探测
+
+为什么：多人/多实例在同一台机器上跑时端口经常被占，启动直接失败。
+
+改法：`-port` 默认值改成 `:8081`，用 `net.Listen` 真实绑定而不是先探测再绑（避免探测和绑定之间被别的进程抢走），失败就 `+1` 换下一个端口，最多 `MAX_PORT_RETRIES = 100` 次；`http.ListenAndServe` 换成 `http.Serve(listener, mux)`；日志打印实际绑定到的端口。指定 `-port=:8092` 时也走同一套逻辑，即从 8092 往后找。
+
+```
+Port 18100 not available (listen tcp :18100: bind: address already in use), trying next one..
+Listening on port [::]:18101 .....
+Recursive download: wget -r -l100 -np -nH -e robots=off -R "index.html*" http://HOSTNAME:18101/
+```
+
+绑定成功后 `logWgetCmd()` 会用 `os.Hostname()` 和实际端口拼出可直接复制的递归下载命令，省掉手工对端口。开了 `-auth` 时会带上 `--user=<用户名> --password=***`，密码不落日志，自己替换。
+
+注意：非「端口占用」类错误（如绑 1024 以下端口权限不足）也会触发重试，此时会连着刷 100 行日志后退出，看日志里的报错原因即可。
+
 ## 三、客户端 wget 配置
 
 编译并启动：
 
 ```bash
 go build -o file_server .          # 注意 go build ./... 不产出可执行文件
-./file_server -dir=/home/work -port=:8092 -depth=100
+./file_server -dir=/home/work -depth=100          # 端口从 8081 开始自动探测
+./file_server -dir=/home/work -port=:8092 -depth=100   # 从 8092 开始探测
 ```
+
+启动日志里的 `Listening on port [::]:xxxx` 是实际端口，wget 命令里的 `HOST:8092` 要按它替换。
 
 ### 场景 1：普通递归下载（默认推荐）
 

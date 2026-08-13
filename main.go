@@ -7,12 +7,14 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -33,19 +35,22 @@ var (
 const MAX_MEMORY = 1 * 1024 * 1024
 const VERSION = "1.0"
 
+// how many consecutive ports are probed when the requested one is busy
+const MAX_PORT_RETRIES = 100
+
 func main() {
 
 	//fmt.Println(len(os.Args), os.Args)
 	if len(os.Args) > 1 && os.Args[1] == "-v" {
-		fmt.Println("Version " + VERSION + " zorchp bugfix 20260813")
+		fmt.Println("Version " + VERSION + " pengzongyu bugfix 20260813")
 		os.Exit(0)
 	}
 
 	flag.StringVar(&dir, "dir", ".", "Specify a directory to server files from.")
-	flag.StringVar(&port, "port", ":8080", "Port to bind the file server")
+	flag.StringVar(&port, "port", ":8081", "Port to bind the file server, next free one is used if busy")
 	flag.BoolVar(&logging, "log", true, "Enable Log (true/false)")
 	flag.StringVar(&auth, "auth", "", "'username:pass' Basic Auth")
-	flag.IntVar(&depth, "depth", 5, "Depth directory crawler")
+	flag.IntVar(&depth, "depth", 100, "Depth directory crawler")
 	//flag.StringVar(&commandsFile, "commands", "", "Path to external commands file.json")
 	flag.BoolVar(&debug, "debug", false, "Make external assets expire every request")
 	flag.BoolVar(&disable_sys_command, "disable_cmd", true, "Disable sys comands")
@@ -101,11 +106,72 @@ func main() {
 	mux.Handle("/-/api/dirs", makeGzipHandler(http.HandlerFunc(SearchHandle)))
 	mux.Handle("/", BasicAuth(http.HandlerFunc(handleReq), auth))
 
-	log.Printf("Listening on port %s .....\n", port)
+	listener, err := listenFreePort(port)
+	if err != nil {
+		log.Fatalf("Cant bind any port in %d tries starting at %s: %s", MAX_PORT_RETRIES, port, err)
+	}
+
+	log.Printf("Listening on port %s .....\n", listener.Addr().String())
+	logWgetCmd(listener)
 	if debug {
 		log.Print("Serving data dir in debug mode.. no assets caching.\n")
 	}
-	http.ListenAndServe(port, mux)
+	http.Serve(listener, mux)
+
+}
+
+// logWgetCmd prints a ready to copy wget command, with the real hostname and
+// bound port, to recursively download the served dir
+func logWgetCmd(listener net.Listener) {
+
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "localhost"
+	}
+
+	boundPort := ""
+	if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+		boundPort = strconv.Itoa(tcpAddr.Port)
+	} else if _, p, err := net.SplitHostPort(listener.Addr().String()); err == nil {
+		boundPort = p
+	}
+
+	opts := `-r -l100 -np -nH -e robots=off -R "index.html*"`
+	if auth != "" {
+		opts += " --user=" + strings.SplitN(auth, ":", 2)[0] + " --password=***"
+	}
+
+	log.Printf("Recursive download: wget %s http://%s:%s/", opts, host, boundPort)
+
+}
+
+// listenFreePort binds the requested addr, and if the port is already in use,
+// retries with the next one, up to MAX_PORT_RETRIES times. Binding instead of
+// just probing avoids racing with other processes for the same port.
+func listenFreePort(addr string) (net.Listener, error) {
+
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	basePort, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for i := 0; i < MAX_PORT_RETRIES; i++ {
+		p := basePort + i
+		listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p)))
+		if err == nil {
+			return listener, nil
+		}
+		log.Printf("Port %d not available (%s), trying next one..", p, err)
+		lastErr = err
+	}
+
+	return nil, lastErr
 
 }
 
