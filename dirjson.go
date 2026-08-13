@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/jordic/file_server/util"
+	"file_server/util"
 	"io"
 	"os"
 	"time"

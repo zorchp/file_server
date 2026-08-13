@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/jordic/file_server/cmdwebstream"
+	"file_server/cmdwebstream"
 	"log"
 	"net/http"
 	"os/exec"

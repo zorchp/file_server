@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -36,11 +37,11 @@ func main() {
 
 	//fmt.Println(len(os.Args), os.Args)
 	if len(os.Args) > 1 && os.Args[1] == "-v" {
-		fmt.Println("Version " + VERSION)
+		fmt.Println("Version " + VERSION + " zorchp bugfix 20260813")
 		os.Exit(0)
 	}
 
-	flag.StringVar(&dir, "dir", "/tmp", "Specify a directory to server files from.")
+	flag.StringVar(&dir, "dir", ".", "Specify a directory to server files from.")
 	flag.StringVar(&port, "port", ":8080", "Port to bind the file server")
 	flag.BoolVar(&logging, "log", true, "Enable Log (true/false)")
 	flag.StringVar(&auth, "auth", "", "'username:pass' Basic Auth")
@@ -127,12 +128,40 @@ func handleReq(w http.ResponseWriter, r *http.Request) {
 		handleDir(w, r)
 	} else {
 		log.Printf("downloading file %s", path.Clean(dir+r.URL.Path))
-		r.Header.Del("If-Modified-Since")
-		http.ServeFile(w, r, path.Clean(dir+r.URL.Path))
-		//http.ServeContent(w, r, r.URL.Path)
-		//w.Write([]byte("this is a test inside file handler"))
-
+		serveFileRaw(w, r, path.Clean(dir+r.URL.Path))
 	}
+
+}
+
+// serveFileRaw serves a file as is. Unlike http.ServeFile it doesn't redirect
+// requests ending in /index.html to the dir listing, so index.html files can
+// be downloaded too. Client caches are ignored, the full content is always
+// sent.
+func serveFileRaw(w http.ResponseWriter, r *http.Request, name string) {
+
+	f, err := os.Open(name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if fi.IsDir() {
+		// dir urls end with /, so handleDir picks them up
+		target := &url.URL{Path: r.URL.Path + "/", RawQuery: r.URL.RawQuery}
+		http.Redirect(w, r, target.String(), http.StatusMovedPermanently)
+		return
+	}
+
+	r.Header.Del("If-Modified-Since")
+	r.Header.Del("If-None-Match")
+	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 
 }
 
@@ -165,6 +194,17 @@ func handleDir(w http.ResponseWriter, r *http.Request) {
 		err := result.Get()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Non browser clients (wget, curl..) can't run the js ui, serve them a
+	// plain listing with real links, so recursive downloads work.
+	if wantsPlainHTML(r) {
+		result := &DirHTML{w, d, r.URL.Path}
+		err := result.Get()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
 		}
 		return
 	}

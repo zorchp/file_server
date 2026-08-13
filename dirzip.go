@@ -18,6 +18,10 @@ type DirZip struct {
 
 func (t *DirZip) Get() error {
 
+	if _, err := os.Stat(t.d); err != nil {
+		return err
+	}
+
 	zipFileName := fmt.Sprintf("%s.zip", filepath.Base(t.d))
 	t.w.Header().Set("Content-Type", "application/zip")
 	t.w.Header().Set("Content-Disposition", `attachment; filename="`+zipFileName+`"`)
@@ -26,6 +30,12 @@ func (t *DirZip) Get() error {
 	defer zw.Close()
 
 	filepath.Walk(t.d, func(path string, info os.FileInfo, err error) error {
+
+		// unreadable path, info is nil here, skip it instead of panicking
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Cannot walk <%s>: %s\n", path, err)
+			return nil
+		}
 
 		if info.IsDir() {
 			return nil
